@@ -8,14 +8,19 @@ __version__ = "1.0.0"
 __author__ = "ARIMA-RL Project"
 __description__ = "Optimización de hiperparámetros ARIMA mediante Aprendizaje Reforzado"
 
-from .data_processor import TimeSeriesProcessor, load_and_prepare_data
+from .data_processor import TimeSeriesProcessor
 from .arima_env import ARIMAHyperparamEnv, make_arima_env
 from .rl_agent import ARIMAAgent
-from .arima_utils import ARIMAModel, compare_models, grid_search_arima
+
+# Nuevas importaciones agregadas
+from .arima_utils import (
+    ARIMAModel,
+    compare_models,
+    grid_search_arima
+)
 
 __all__ = [
     'TimeSeriesProcessor',
-    'load_and_prepare_data',
     'ARIMAHyperparamEnv',
     'make_arima_env',
     'ARIMAAgent',
@@ -23,3 +28,4 @@ __all__ = [
     'compare_models',
     'grid_search_arima'
 ]
+

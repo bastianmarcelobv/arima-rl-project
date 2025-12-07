@@ -152,12 +152,18 @@ class DataDownloader:
         print("\n✂️  Dividiendo datos en train/val/test...")
         
         # Verificar que tenemos 60 meses
-        assert len(df) == 60, f"Error: Se esperaban 60 meses, se obtuvieron {len(df)}"
-        
+        if len(df) < 24:
+            raise ValueError(f"Dataset muy pequeño: se necesitan ≥ 24 meses, se obtuvieron {len(df)}")
+
         # División
-        train = df.iloc[:48]      # Primeros 48 meses
-        val = df.iloc[48:54]      # Siguientes 6 meses
-        test = df.iloc[54:60]     # Últimos 6 meses
+        n = len(df)
+        n_train = int(0.8 * n)
+        n_val   = int(0.1 * n)
+        n_test  = n - n_train - n_val
+
+        train = df.iloc[:n_train]
+        val   = df.iloc[n_train:n_train + n_val]
+        test  = df.iloc[n_train + n_val:]
         
         print(f"✅ División completada:")
         print(f"   📚 Train:      {len(train)} meses ({train.index[0].strftime('%Y-%m')} a {train.index[-1].strftime('%Y-%m')})")

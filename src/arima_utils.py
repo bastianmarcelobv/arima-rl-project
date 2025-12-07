@@ -2,456 +2,322 @@
 # ============================================================================
 # Proyecto: Agentificación de Modelos ARIMA con Aprendizaje Reforzado
 # Archivo: arima_utils.py
-# Descripción: Utilidades para entrenamiento, evaluación y comparación de modelos ARIMA
+# Descripción: Utilidades para ajuste y comparación de modelos ARIMA
 # ============================================================================
+
+import time
+from dataclasses import dataclass, asdict
+from typing import List, Tuple, Dict, Optional
 
 import numpy as np
 import pandas as pd
 from statsmodels.tsa.arima.model import ARIMA
-from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
-from scipy import stats
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 import warnings
-import time
 
-warnings.filterwarnings('ignore', category=ConvergenceWarning)
-warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 
+# ============================================================================
+# CLASE ARIMAModel
+# ============================================================================
+
+@dataclass
 class ARIMAModel:
     """
-    Wrapper para modelo ARIMA con funcionalidades completas de entrenamiento,
-    pronóstico, evaluación y diagnóstico.
+    Wrapper ligero sobre statsmodels.ARIMA para facilitar comparación de modelos.
+
+    Atributos principales:
+        order: tupla (p, d, q)
+        aic, bic: criterios de información
+        rmse, mae: métricas de error sobre el conjunto de validación
+        training_time: tiempo de ajuste del modelo
+        failed: indica si el ajuste falló
     """
-    
-    def __init__(self, order=(1, 1, 1)):
-        """
-        Inicializa modelo ARIMA.
-        
-        Args:
-            order: Tupla (p, d, q) con hiperparámetros
-        """
-        self.order = order
-        self.p, self.d, self.q = order
-        self.model = None
-        self.fitted_model = None
-        self.metrics = {}
-        
-    def fit(self, train_data):
-        """
-        Entrena modelo ARIMA con datos de entrenamiento.
-        
-        Args:
-            train_data: Array o Series con datos de entrenamiento
-            
-        Returns:
-            self: Modelo entrenado
-        """
-        start_time = time.time()
-        
-        try:
-            # Crear y ajustar modelo
-            self.model = ARIMA(train_data, order=self.order)
-            self.fitted_model = self.model.fit()
-            
-            # Guardar tiempo de entrenamiento
-            self.metrics['training_time'] = time.time() - start_time
-            
-            # Guardar métricas de complejidad
-            self.metrics['aic'] = self.fitted_model.aic
-            self.metrics['bic'] = self.fitted_model.bic
-            self.metrics['aicc'] = self.fitted_model.aicc
-            self.metrics['n_params'] = self.p + self.q + 1
-            
-            # Residuos
-            self.metrics['residuals'] = self.fitted_model.resid
-            self.metrics['residuals_mean'] = np.mean(self.fitted_model.resid)
-            self.metrics['residuals_std'] = np.std(self.fitted_model.resid)
-            
-        except Exception as e:
-            raise RuntimeError(f"Error al entrenar ARIMA{self.order}: {e}")
-        
-        return self
-    
-    def forecast(self, steps, return_conf_int=True, alpha=0.05):
-        """
-        Genera pronósticos fuera de muestra.
-        
-        Args:
-            steps: Número de pasos adelante a pronosticar
-            return_conf_int: Si retornar intervalos de confianza
-            alpha: Nivel de significancia (default: 0.05 para IC 95%)
-            
-        Returns:
-            tuple: (forecast, lower_conf_int, upper_conf_int) si return_conf_int=True
-                   forecast si return_conf_int=False
-        """
-        if self.fitted_model is None:
-            raise ValueError("Modelo no entrenado. Ejecute fit() primero.")
-        
-        # Generar pronóstico
-        forecast_result = self.fitted_model.get_forecast(steps=steps)
-        forecast = forecast_result.predicted_mean
-        
-        if return_conf_int:
-            conf_int = forecast_result.conf_int(alpha=alpha)
-            lower = conf_int.iloc[:, 0].values
-            upper = conf_int.iloc[:, 1].values
-            return forecast.values, lower, upper
-        else:
-            return forecast.values
-    
-    def evaluate(self, val_data):
-        """
-        Evalúa modelo en datos de validación/test.
-        
-        Args:
-            val_data: Datos de validación
-            
-        Returns:
-            dict: Métricas de evaluación
-        """
-        if self.fitted_model is None:
-            raise ValueError("Modelo no entrenado.")
-        
-        # Generar pronóstico
-        forecast = self.forecast(steps=len(val_data), return_conf_int=False)
-        
-        # Calcular métricas
-        rmse = np.sqrt(mean_squared_error(val_data, forecast))
-        mae = mean_absolute_error(val_data, forecast)
-        mape = np.mean(np.abs((val_data - forecast) / val_data)) * 100
-        
-        # R² (coeficiente de determinación)
-        ss_res = np.sum((val_data - forecast) ** 2)
-        ss_tot = np.sum((val_data - np.mean(val_data)) ** 2)
-        r2 = 1 - (ss_res / ss_tot)
-        
-        eval_metrics = {
-            'rmse': rmse,
-            'mae': mae,
-            'mape': mape,
-            'r2': r2,
-            'aic': self.metrics['aic'],
-            'bic': self.metrics['bic'],
-            'aicc': self.metrics['aicc']
-        }
-        
-        return eval_metrics
-    
-    def diagnose_residuals(self):
-        """
-        Realiza diagnóstico completo de residuos.
-        
-        Returns:
-            dict: Resultados de diagnóstico
-        """
-        if self.fitted_model is None:
-            raise ValueError("Modelo no entrenado.")
-        
-        residuals = self.fitted_model.resid
-        
-        # Test de normalidad (Jarque-Bera)
-        jb_stat, jb_pvalue = stats.jarque_bera(residuals)
-        
-        # Test de autocorrelación (Ljung-Box)
-        lb_test = acorr_ljungbox(residuals, lags=min(10, len(residuals)//5), return_df=True)
-        lb_pvalue = lb_test['lb_pvalue'].iloc[-1]
-        
-        # Homogeneidad de varianza (simple check)
-        # Dividir residuos en dos mitades y comparar varianzas
-        mid = len(residuals) // 2
-        var_first_half = np.var(residuals[:mid])
-        var_second_half = np.var(residuals[mid:])
-        variance_ratio = max(var_first_half, var_second_half) / min(var_first_half, var_second_half)
-        
-        diagnostics = {
-            'residuals_mean': self.metrics['residuals_mean'],
-            'residuals_std': self.metrics['residuals_std'],
-            'jb_statistic': jb_stat,
-            'jb_pvalue': jb_pvalue,
-            'is_normal': jb_pvalue > 0.05,
-            'lb_pvalue': lb_pvalue,
-            'no_autocorrelation': lb_pvalue > 0.05,
-            'variance_ratio': variance_ratio,
-            'variance_stable': variance_ratio < 2.0
-        }
-        
-        return diagnostics
-    
-    def summary(self):
-        """
-        Genera resumen completo del modelo.
-        
-        Returns:
-            str: Resumen formateado
-        """
-        if self.fitted_model is None:
-            return "Modelo no entrenado."
-        
-        return str(self.fitted_model.summary())
+    order: Tuple[int, int, int]
+    aic: float
+    bic: float
+    rmse: float
+    mae: float
+    training_time: float
+    n_params: int
+    failed: bool = False
+    name: Optional[str] = None
+
+    # Estos campos no se incluyen en el dataclass por simplicidad, pero se guardan aparte
+    fitted_model: object = None
+    forecast: Optional[np.ndarray] = None
+    conf_int: Optional[np.ndarray] = None
+
+    def to_dict(self) -> Dict:
+        d = asdict(self)
+        # quitar objetos grandes que no se pueden serializar
+        d.pop("fitted_model", None)
+        d.pop("forecast", None)
+        d.pop("conf_int", None)
+        return d
+
+
+def fit_arima_model(
+    train_series: pd.Series,
+    val_series: Optional[pd.Series] = None,
+    order: Tuple[int, int, int] = (1, 1, 1),
+    alpha: float = 0.05,
+    max_forecast_steps: Optional[int] = None,
+) -> ARIMAModel:
+    """
+    Ajusta un modelo ARIMA(train_series, order) y evalúa sobre val_series (si se entrega).
+
+    Args:
+        train_series: Serie de entrenamiento (índice temporal o entero).
+        val_series: Serie de validación. Si es None, sólo se ajusta el modelo.
+        order: tupla (p, d, q).
+        alpha: nivel para intervalos de confianza (por ejemplo 0.05 → 95%).
+        max_forecast_steps: limitar pasos de forecast (por defecto len(val_series)).
+
+    Returns:
+        ARIMAModel con métricas y modelo ajustado.
+    """
+    p, d, q = order
+    start_time = time.time()
+
+    try:
+        model = ARIMA(train_series, order=order)
+        fitted = model.fit()
+
+        training_time = time.time() - start_time
+        aic = float(fitted.aic)
+        bic = float(fitted.bic)
+        n_params = p + q + 1  # aproximación simple
+
+        rmse = np.nan
+        mae = np.nan
+        forecast = None
+        conf_int = None
+
+        if val_series is not None and len(val_series) > 0:
+            steps = len(val_series)
+            if max_forecast_steps is not None:
+                steps = min(steps, max_forecast_steps)
+
+            res = fitted.get_forecast(steps=steps)
+            forecast = res.predicted_mean.values
+            conf_int = res.conf_int(alpha=alpha).values
+
+            rmse = float(np.sqrt(mean_squared_error(val_series.values[:steps], forecast)))
+            mae = float(mean_absolute_error(val_series.values[:steps], forecast))
+
+        result = ARIMAModel(
+            order=order,
+            aic=aic,
+            bic=bic,
+            rmse=rmse,
+            mae=mae,
+            training_time=training_time,
+            n_params=n_params,
+            failed=False,
+            name=f"ARIMA{order}",
+        )
+        result.fitted_model = fitted
+        result.forecast = forecast
+        result.conf_int = conf_int
+
+        return result
+
+    except Exception as e:
+        # Modelo falló: devolvemos ARIMAModel "malo" para poder compararlo
+        training_time = time.time() - start_time
+        print(f"⚠️  Error al ajustar ARIMA{order}: {e}")
+
+        return ARIMAModel(
+            order=order,
+            aic=1e9,
+            bic=1e9,
+            rmse=1e6,
+            mae=1e6,
+            training_time=training_time,
+            n_params=p + q + 1,
+            failed=True,
+            name=f"ARIMA{order}",
+        )
 
 
 # ============================================================================
-# FUNCIONES DE COMPARACIÓN DE MODELOS
+# COMPARACIÓN DE MODELOS
 # ============================================================================
 
-def compare_models(train_data, val_data, configs, return_best=True):
+def compare_models(
+    train_series: pd.Series,
+    val_series: pd.Series,
+    configs: List[Tuple[int, int, int]],
+    alpha: float = 0.05,
+) -> Tuple[List[ARIMAModel], pd.DataFrame]:
     """
-    Compara múltiples configuraciones ARIMA y retorna el mejor.
-    
+    Compara una lista de modelos ARIMA sobre la misma serie train/val.
+
     Args:
-        train_data: Datos de entrenamiento
-        val_data: Datos de validación
-        configs: Lista de tuplas (p, d, q)
-        return_best: Si retornar solo el mejor modelo
-        
+        train_series: Serie de entrenamiento.
+        val_series: Serie de validación.
+        configs: Lista de tuplas (p, d, q) a evaluar. Deben ser ≥ 3 según el PDF.
+        alpha: Nivel para intervalos de confianza.
+
     Returns:
-        dict o list: Mejor modelo o lista de todos los modelos con métricas
+        (models_ordenados, df_resultados)
     """
-    print(f"\n🔍 Comparando {len(configs)} configuraciones ARIMA...")
-    
-    results = []
-    
-    for i, config in enumerate(configs):
-        p, d, q = config
-        print(f"   [{i+1}/{len(configs)}] Evaluando ARIMA{config}...", end=' ')
-        
-        try:
-            # Entrenar modelo
-            model = ARIMAModel(order=config)
-            model.fit(train_data)
-            
-            # Evaluar
-            eval_metrics = model.evaluate(val_data)
-            
-            # Diagnóstico de residuos
-            diagnostics = model.diagnose_residuals()
-            
-            result = {
-                'config': config,
-                'model': model,
-                'metrics': eval_metrics,
-                'diagnostics': diagnostics,
-                'success': True
-            }
-            
-            print(f"✅ AIC: {eval_metrics['aic']:.2f}, RMSE: {eval_metrics['rmse']:.2f}")
-            
-        except Exception as e:
-            print(f"❌ Error: {str(e)[:50]}")
-            result = {
-                'config': config,
-                'model': None,
-                'metrics': {'aic': np.inf, 'rmse': np.inf},
-                'diagnostics': {},
-                'success': False,
-                'error': str(e)
-            }
-        
-        results.append(result)
-    
-    # Ordenar por AIC
-    results_sorted = sorted(results, key=lambda x: x['metrics'].get('aic', np.inf))
-    
-    if return_best:
-        best = results_sorted[0]
-        print(f"\n🏆 Mejor modelo: ARIMA{best['config']}")
-        print(f"   AIC: {best['metrics']['aic']:.2f}")
-        print(f"   RMSE: {best['metrics']['rmse']:.2f}")
-        return best
-    else:
-        return results_sorted
+    assert len(configs) >= 3, "Se requieren al menos 3 configuraciones (p,d,q) para la comparación."
+
+    print("\n" + "=" * 80)
+    print("📊 COMPARACIÓN DE MODELOS ARIMA (criterio AIC)")
+    print("=" * 80)
+
+    models: List[ARIMAModel] = []
+
+    for order in configs:
+        print(f"\n🔧 Ajustando ARIMA{order}...")
+        m = fit_arima_model(train_series, val_series, order=order, alpha=alpha)
+        models.append(m)
+        print(f"   → AIC={m.aic:.2f}, BIC={m.bic:.2f}, RMSE={m.rmse:.2f}, MAE={m.mae:.2f}, "
+              f"tiempo={m.training_time:.2f}s, failed={m.failed}")
+
+    # Ordenar por AIC ascendente (mejor primero)
+    models_sorted = sorted(models, key=lambda x: x.aic)
+    best = models_sorted[0]
+
+    print("\n✅ Mejor modelo según AIC:")
+    print(f"   ARIMA{best.order} con AIC={best.aic:.2f}, RMSE={best.rmse:.2f}")
+
+    # DataFrame resumen
+    rows = [m.to_dict() for m in models_sorted]
+    df_results = pd.DataFrame(rows)
+    df_results["order_str"] = df_results["order"].apply(lambda t: f"ARIMA{tuple(t)}")
+    df_results = df_results[
+        ["order_str", "order", "aic", "bic", "rmse", "mae", "n_params", "training_time", "failed"]
+    ]
+
+    return models_sorted, df_results
 
 
-def grid_search_arima(train_data, val_data, p_range=(0, 3), d_range=(0, 2), q_range=(0, 3)):
+# ============================================================================
+# GRID SEARCH (BÚSQUEDA EXHAUSTIVA)
+# ============================================================================
+
+def grid_search_arima(
+    train_series: pd.Series,
+    val_series: pd.Series,
+    p_range: Tuple[int, int] = (0, 5),
+    d_range: Tuple[int, int] = (0, 2),
+    q_range: Tuple[int, int] = (0, 4),
+    alpha: float = 0.05,
+    max_models: Optional[int] = None,
+) -> Tuple[ARIMAModel, pd.DataFrame]:
     """
-    Búsqueda exhaustiva de hiperparámetros ARIMA.
-    
+    Búsqueda exhaustiva simple sobre rangos de p,d,q, seleccionando el mejor según AIC.
+
     Args:
-        train_data: Datos de entrenamiento
-        val_data: Datos de validación
-        p_range: Rango de valores p (min, max)
-        d_range: Rango de valores d (min, max)
-        q_range: Rango de valores q (min, max)
-        
+        train_series: Serie de entrenamiento.
+        val_series: Serie de validación.
+        p_range: (p_min, p_max)
+        d_range: (d_min, d_max)
+        q_range: (q_min, q_max)
+        alpha: nivel para intervalos de confianza.
+        max_models: límite opcional de modelos a evaluar (por si el espacio es muy grande).
+
     Returns:
-        dict: Mejor modelo encontrado
+        (mejor_modelo, df_resultados_completo)
     """
-    # Generar todas las configuraciones
-    configs = []
-    for p in range(p_range[0], p_range[1] + 1):
-        for d in range(d_range[0], d_range[1] + 1):
-            for q in range(q_range[0], q_range[1] + 1):
+    p_min, p_max = p_range
+    d_min, d_max = d_range
+    q_min, q_max = q_range
+
+    configs: List[Tuple[int, int, int]] = []
+    for p in range(p_min, p_max + 1):
+        for d in range(d_min, d_max + 1):
+            for q in range(q_min, q_max + 1):
                 configs.append((p, d, q))
-    
-    print(f"🔎 Grid Search: {len(configs)} configuraciones totales")
-    
-    # Comparar todos los modelos
-    best = compare_models(train_data, val_data, configs, return_best=True)
-    
-    return best
 
+    if max_models is not None:
+        configs = configs[:max_models]
 
-# ============================================================================
-# FUNCIONES DE VISUALIZACIÓN Y EXPORTACIÓN
-# ============================================================================
+    print("\n" + "=" * 80)
+    print("🔍 GRID SEARCH ARIMA (criterio AIC)")
+    print("=" * 80)
+    print(f"   Total de configuraciones a evaluar: {len(configs)}")
 
-def create_comparison_table(results):
-    """
-    Crea tabla comparativa de modelos.
-    
-    Args:
-        results: Lista de resultados de compare_models
-        
-    Returns:
-        pd.DataFrame: Tabla comparativa
-    """
-    rows = []
-    
-    for result in results:
-        if result['success']:
-            p, d, q = result['config']
-            metrics = result['metrics']
-            
-            row = {
-                'p': p,
-                'd': d,
-                'q': q,
-                'AIC': metrics['aic'],
-                'BIC': metrics['bic'],
-                'RMSE': metrics['rmse'],
-                'MAE': metrics['mae'],
-                'MAPE': metrics['mape'],
-                'R²': metrics['r2']
-            }
-            
-            rows.append(row)
-    
-    df = pd.DataFrame(rows)
-    df = df.sort_values('AIC').reset_index(drop=True)
-    
-    return df
+    models: List[ARIMAModel] = []
 
+    for i, order in enumerate(configs, start=1):
+        print(f"\n[{i}/{len(configs)}] Ajustando ARIMA{order}...")
+        m = fit_arima_model(train_series, val_series, order=order, alpha=alpha)
+        models.append(m)
+        print(f"   → AIC={m.aic:.2f}, RMSE={m.rmse:.2f}, failed={m.failed}")
 
-def forecast_with_intervals(model, steps, alpha=0.05):
-    """
-    Genera pronóstico con intervalos de confianza en formato DataFrame.
-    
-    Args:
-        model: Modelo ARIMA entrenado
-        steps: Número de pasos adelante
-        alpha: Nivel de significancia
-        
-    Returns:
-        pd.DataFrame: Pronóstico con intervalos
-    """
-    forecast, lower, upper = model.forecast(steps, return_conf_int=True, alpha=alpha)
-    
-    df_forecast = pd.DataFrame({
-        'forecast': forecast,
-        'lower_bound': lower,
-        'upper_bound': upper
-    })
-    
-    return df_forecast
+    # Ordenar por AIC y construir DataFrame
+    models_sorted = sorted(models, key=lambda x: x.aic)
+    best = models_sorted[0]
 
+    print("\n✅ Mejor modelo encontrado por grid search:")
+    print(f"   ARIMA{best.order} con AIC={best.aic:.2f}, RMSE={best.rmse:.2f}")
+
+    rows = [m.to_dict() for m in models_sorted]
+    df_results = pd.DataFrame(rows)
+    df_results["order_str"] = df_results["order"].apply(lambda t: f"ARIMA{tuple(t)}")
+    df_results = df_results[
+        ["order_str", "order", "aic", "bic", "rmse", "mae", "n_params", "training_time", "failed"]
+    ]
+
+    return best, df_results
 
 # ============================================================================
-# FUNCIONES AUXILIARES
+# TABLA PARA LA INTERFAZ STREAMLIT
 # ============================================================================
 
-def auto_select_d(series, max_d=2):
+def create_comparison_table(results) -> pd.DataFrame:
     """
-    Selecciona automáticamente el orden de diferenciación mediante prueba ADF.
-    
-    Args:
-        series: Serie temporal
-        max_d: Máximo orden de diferenciación a probar
-        
-    Returns:
-        int: Orden de diferenciación óptimo
+    Recibe:
+      - un DataFrame df_results
+      - o la tupla (models_sorted, df_results)
+    Devuelve la tabla final ordenada por AIC.
     """
-    from statsmodels.tsa.stattools import adfuller
-    
-    for d in range(max_d + 1):
-        # Aplicar diferenciación
-        if d == 0:
-            series_diff = series
-        else:
-            series_diff = series.copy()
-            for _ in range(d):
-                series_diff = series_diff.diff().dropna()
-        
-        # Prueba ADF
-        adf_result = adfuller(series_diff, autolag='AIC')
-        pvalue = adf_result[1]
-        
-        # Si es estacionaria, retornar d
-        if pvalue < 0.05:
-            return d
-    
-    # Si no se encontró estacionariedad, retornar max_d
-    return max_d
+
+    # Caso 1 — results es una tupla (salida estándar de compare_models)
+    if isinstance(results, tuple):
+        df_results = results[1].copy()
+
+    # Caso 2 — results es directamente un DataFrame
+    elif isinstance(results, pd.DataFrame):
+        df_results = results.copy()
+
+    else:
+        raise ValueError("create_comparison_table recibe un tipo inválido.")
+
+    if df_results.empty:
+        raise ValueError("df_results está vacío.")
+
+    # Agregar columna bonita
+    if "order_str" not in df_results.columns:
+        df_results["order_str"] = df_results["order"].apply(lambda t: f"ARIMA{tuple(t)}")
+
+    # Ordenar por AIC
+    df_results = df_results.sort_values("aic", ascending=True).reset_index(drop=True)
+
+    return df_results
 
 
-def suggest_arima_order_from_acf_pacf(acf_values, pacf_values, threshold=0.2):
+def forecast_with_intervals(model: ARIMAModel, steps: int = 10, alpha: float = 0.05):
     """
-    Sugiere orden ARIMA basándose en gráficas ACF/PACF.
-    
-    Args:
-        acf_values: Valores de ACF
-        pacf_values: Valores de PACF
-        threshold: Umbral de significancia
-        
-    Returns:
-        tuple: (p_suggested, q_suggested)
+    Devuelve forecast + intervalo de confianza (% = 1-alpha).
     """
-    # Encontrar primer lag donde PACF cae por debajo del umbral
-    p = 0
-    for i in range(1, len(pacf_values)):
-        if abs(pacf_values[i]) > threshold:
-            p = i
-        else:
-            break
-    
-    # Encontrar primer lag donde ACF cae por debajo del umbral
-    q = 0
-    for i in range(1, len(acf_values)):
-        if abs(acf_values[i]) > threshold:
-            q = i
-        else:
-            break
-    
-    return (p, q)
+    if model.fitted_model is None:
+        raise ValueError("Modelo no está ajustado. Llama .fit() primero.")
 
+    res = model.fitted_model.get_forecast(steps=steps)
+    forecast = res.predicted_mean.values
+    conf_int = res.conf_int(alpha=alpha).values
 
-if __name__ == "__main__":
-    # Ejemplo de uso
-    print("🧪 Probando utilidades ARIMA...")
-    
-    # Generar datos sintéticos
-    np.random.seed(42)
-    train_data = np.random.randn(48) * 5 + 50
-    val_data = np.random.randn(6) * 5 + 50
-    
-    # Probar modelo individual
-    print("\n1️⃣  Probando modelo individual...")
-    model = ARIMAModel(order=(1, 1, 1))
-    model.fit(train_data)
-    metrics = model.evaluate(val_data)
-    print(f"   Métricas: {metrics}")
-    
-    # Probar comparación de modelos
-    print("\n2️⃣  Probando comparación de modelos...")
-    configs = [(1,1,1), (2,1,1), (1,1,2)]
-    best = compare_models(train_data, val_data, configs)
-    print(f"   Mejor: ARIMA{best['config']}")
-    
-    # Probar pronóstico
-    print("\n3️⃣  Probando pronóstico...")
-    forecast_df = forecast_with_intervals(best['model'], steps=6)
-    print(forecast_df.head())
-    
-    print("\n✅ Pruebas completadas!")
+    lower = conf_int[:, 0]
+    upper = conf_int[:, 1]
+
+    return forecast, lower, upper

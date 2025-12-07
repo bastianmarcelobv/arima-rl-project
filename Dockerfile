@@ -1,97 +1,74 @@
-# ============================================================================
+# =============================================================================
 # Proyecto: Agentificación de Modelos ARIMA con Aprendizaje Reforzado
-# Archivo: Dockerfile
-# Descripción: Containerización completa con generación automática de datos
-# ============================================================================
+# Imagen Docker FINAL (modelo preentrenado)
+# =============================================================================
 
 FROM python:3.10-slim
 
-# Metadatos
-LABEL maintainer="ARIMA-RL Project"
-LABEL description="Agente RL-ARIMA para optimización de hiperparámetros"
-LABEL version="1.0.0"
+LABEL maintainer="Tomás Stevenson & Matías Schonhaut"
+LABEL description="Optimización de Modelos ARIMA vía RL (pretrained agent)"
+LABEL version="2.0.0"
 
-# Variables de entorno
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     DEBIAN_FRONTEND=noninteractive \
     APP_HOME=/app \
     PORT=8501
 
-# Instalar dependencias del sistema
+# ============================================================================  
+# Dependencias de sistema para statsmodels, pmdarima y PyTorch
+# ============================================================================
 RUN apt-get update && apt-get install -y \
     build-essential \
+    gcc \
+    gfortran \
+    libblas-dev \
+    liblapack-dev \
     curl \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Establecer directorio de trabajo
 WORKDIR $APP_HOME
 
-# Copiar archivos de dependencias
+# ============================================================================  
+# Instalar dependencias Python
+# ============================================================================
 COPY requirements.txt .
 
-# Instalar dependencias de Python
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# PyTorch CPU
+RUN pip install --upgrade pip && \
+    pip install torch==2.1.0+cpu torchvision==0.16.0+cpu --extra-index-url https://download.pytorch.org/whl/cpu
 
-# Copiar código fuente y scripts
-COPY src/ ./src/
-COPY data/download_data.py ./data/download_data.py
-COPY scripts/ ./scripts/
-COPY config/ ./config/
-COPY assets/ ./assets/
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Dar permisos de ejecución a scripts
-RUN chmod +x scripts/*.sh data/download_data.py
-
+# ============================================================================  
+# Copiar código
 # ============================================================================
-# GENERACIÓN AUTOMÁTICA DE DATOS
+RUN mkdir -p src data config assets models
+
+COPY src/ src/
+COPY data/ data/
+COPY config/ config/
+COPY assets/ assets/
+
+# Copiar modelo RL entrenado
+COPY models/arima_dqn_agent.zip models/arima_dqn_agent.zip
+
+# Permisos si fueran necesarios
+RUN chmod +x data/download_data.py || true
+
+# Generar dataset automáticamente
+RUN python data/download_data.py
+
+# ============================================================================  
+# Configurar Streamlit
 # ============================================================================
-# Este paso descarga/genera los 60 meses de datos de consumo eléctrico alemán
-# y los divide automáticamente en conjuntos train/val/test
-
-RUN echo "========================================" && \
-    echo "📥 Generando datos automáticamente..." && \
-    echo "========================================" && \
-    python data/download_data.py && \
-    echo "" && \
-    echo "✅ Datos generados exitosamente" && \
-    echo "   - 60 meses de consumo eléctrico alemán" && \
-    echo "   - División: 48 train + 6 val + 6 test" && \
-    echo "" && \
-    ls -lh data/
-
-# ============================================================================
-# ENTRENAMIENTO DEL AGENTE RL (OPCIONAL - COMENTADO POR DEFECTO)
-# ============================================================================
-# El entrenamiento del agente RL tarda ~30-60 minutos y aumenta
-# significativamente el tiempo de build. Se recomienda entrenar
-# después de iniciar el contenedor usando:
-#   docker exec -it arima-rl-container python -m src.rl_agent --train --timesteps 50000
-#
-# Para habilitar el entrenamiento automático durante el build, descomente las siguientes líneas:
-#
-# RUN echo "========================================" && \
-#     echo "🎓 Entrenando agente RL..." && \
-#     echo "========================================" && \
-#     mkdir -p models && \
-#     python -m src.rl_agent --train --timesteps 50000 --output-dir models && \
-#     echo "" && \
-#     echo "✅ Agente RL entrenado exitosamente" && \
-#     ls -lh models/
-
-# Crear directorios necesarios
-RUN mkdir -p models data assets/logs
-
-# Exponer puerto de Streamlit
 EXPOSE $PORT
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+HEALTHCHECK --interval=20s --timeout=10s --start-period=20s --retries=3 \
     CMD curl --fail http://localhost:$PORT/_stcore/health || exit 1
 
-# Comando por defecto: ejecutar aplicación Streamlit
+# Ejecutar Streamlit
 CMD ["streamlit", "run", "src/app.py", \
      "--server.port=8501", \
      "--server.address=0.0.0.0", \
